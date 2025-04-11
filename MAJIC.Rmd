@@ -1,0 +1,1015 @@
+---
+title: "MAJIC"
+output: html_document
+date: "2025-04-11"
+---
+```{r}
+# this script computes MAJIC (Mean Across Jaccard Index Checkerboards) to quantify the influence of focal species on community composition. 
+
+# It was specifically written for a longitudinal data-set of infant gut microbiota and their respective mothers. Hence, this script repeats the same analysis for 4 different "time-points": 2 months post-delivery (B-02), 6 months post-delivery (B-06), 11 months post-delivery (B-11), and maternal samples (M)
+
+# users should download respective phyloseq-objects before running this script. For each, pre-filtering was applied (abundance and prevalence), as described in the manuscript. However, any user can apply this script to their own phyloseq objects and their own purposes.
+
+# This script assumes the user has a working R installation with relevant libraries installed
+```
+
+
+
+```{r}
+library(data.table)
+library(phyloseq)
+library(metagMisc)
+library(matrixStats)
+library(microbiome)
+library(tidyverse)
+library(rstatix)
+library(purrr)
+library(reshape)
+library(picante)
+
+setwd("~/Documents/Wellcome_Trust/")
+
+##### focal-species of B-02
+
+pseq.core.B02<-readRDS("pseq.core.B02.rds") ### IMPORTANT CHECK SOURCE-FILE 
+### we will be overwriting a lot of these lines in the chunks below, hence check your source file!
+
+B02_paMatrixPS<-phyloseq_standardize_otu_abundance(pseq.core.B02, method = "pa")
+B02_paMatrix <- as(otu_table(B02_paMatrixPS), "matrix")
+B02_countMatrix <- as(otu_table(pseq.core.B02), "matrix") 
+TB02_paMatrix<-t(B02_paMatrix) ## this is the presence-absence matrix for the relevant time-frame
+TB02_countMatrix<-t(B02_countMatrix) ## this is the count matrix for the relevant time-frame
+
+set.seed(16)
+PA_nullmodel<-randomizeMatrix(TB02_paMatrix, null.model = c("frequency"), iterations = 10000) # this should be our null-model
+
+# lets check the distribution of distance matrix
+trueJ<-vegdist(TB02_paMatrix, method = "jaccard",binary = TRUE)
+nullJ<-vegdist(PA_nullmodel, method = "jaccard",binary = TRUE)
+hist(trueJ)
+hist(nullJ)
+a<-ks.test(trueJ,nullJ) ##looking good, there's biological signal and we destroyed it in our shuffling
+a$p.value
+
+### we have now a PA matrix and a count matrix. We first need to subset the PA matrix into M-Sp.Included and M-Sp-exluded. At the same time, we need to randomize these matrices and make nonparametric tests to see if the distribution is random or not
+
+nullmodel_list_with<- c()
+nullmodel_list_without<- c()
+list_with <- c()
+list_without <- c()
+list_countwith <- c()
+list_countwithout <- c()
+MATS<-c()
+reslist <-c()
+
+for (s in colnames(TB02_paMatrix)){
+    with<-subset(TB02_paMatrix,TB02_paMatrix[,s]>0)
+    without<-subset(TB02_paMatrix,TB02_paMatrix[,s]==0)
+    NULL_with<-subset(PA_nullmodel,PA_nullmodel[,s]>0)
+    NULL_without<-subset(PA_nullmodel,PA_nullmodel[,s]>0)
+    JaccWith<-vegdist(with, method = "jaccard",binary = TRUE)
+    JaccWithout<-vegdist(without, method = "jaccard",binary = TRUE)
+    NULLJaccWith<-vegdist(NULL_with, method = "jaccard",binary = TRUE)
+    NULLJaccWithout<-vegdist(NULL_without, method = "jaccard",binary = TRUE)
+    withCOUNT<-subset(TB02_countMatrix,TB02_countMatrix[,s]>0)
+    withoutCOUNT<-subset(TB02_countMatrix,TB02_countMatrix[,s]==0)
+    res <- ks.test(JaccWith,NULLJaccWith)
+    reslist<-c(reslist,res$p.value)
+    list_with[[s]] <- mean(JaccWith) 
+    list_without[[s]] <- mean(JaccWithout)
+    MATS[[s]] <- list(withCOUNT, withoutCOUNT)
+}
+names(reslist)<-colnames(TB02_paMatrix)
+
+TESTadj<-p.adjust(reslist , method = "bonferroni")
+list_with_sig <- c()
+list_without_sig <- c()
+MATS_sig<-c()
+
+for (i in 1:length(TESTadj)){
+  s<-names(TESTadj)[i]
+  pval<-TESTadj[i]
+  if (pval < 0.05)
+      {
+    list_with_sig[[s]] <- list_with[[s]]
+    list_without_sig[[s]] <- list_without[[s]]
+    MATS_sig[[s]] <- MATS[[s]]
+    } else{
+      NULL
+    }
+}
+
+print(list_with)
+
+Jacc_list_with <- data.frame(list_with)
+Jacc_df_with<-t(Jacc_list_with) %>% as.data.frame()
+Jacc_df_with <- tibble::rownames_to_column(Jacc_df_with, "Species")
+Jacc_df_with<-as.data.table(Jacc_df_with)
+colnames(Jacc_df_with)[2]<-"Jaccard_dissimilarity_SpeciesIncluded"
+
+Jacc_list_without <- data.frame(list_without)
+Jacc_df_without<-t(Jacc_list_without) %>% as.data.frame()
+Jacc_df_without <- tibble::rownames_to_column(Jacc_df_without, "Species")
+Jacc_df_without<-as.data.table(Jacc_df_without)
+colnames(Jacc_df_without)[2]<-"Jaccard_dissimilarity_SpeciesExcluded"
+
+### IMPORTANT CHECK NAME
+JACCARD_RESULTS_B02<-merge(Jacc_df_without,Jacc_df_with, by ="Species")
+#######################
+
+Jacc_list_withsignif <- data.frame(list_with_sig)
+Jacc_df_with_signif<-t(Jacc_list_withsignif) %>% as.data.frame()
+Jacc_df_with_signif <- tibble::rownames_to_column(Jacc_df_with_signif, "Species")
+Jacc_df_with_signif<-as.data.table(Jacc_df_with_signif)
+colnames(Jacc_df_with_signif)[2]<-"Jaccard_dissimilarity_SpeciesIncluded_Signif"
+
+Jacc_list_without_signif <- data.frame(list_without_sig)
+Jacc_df_without_signif<-t(Jacc_list_without_signif) %>% as.data.frame()
+Jacc_df_without_signif <- tibble::rownames_to_column(Jacc_df_without_signif, "Species")
+Jacc_df_without_signif<-as.data.table(Jacc_df_without_signif)
+colnames(Jacc_df_without_signif)[2]<-"Jaccard_dissimilarity_SpeciesExcluded_Signif"
+
+### IMPORTANT CHECK NAME
+JACCARD_RESULTS_B02_signif<-merge(Jacc_df_without_signif,Jacc_df_with_signif, by ="Species")
+ggplot(JACCARD_RESULTS_B02, aes(x=Jaccard_dissimilarity_SpeciesIncluded)) + geom_density()
+JACCARD_RESULTS_B02_ALL<-merge(JACCARD_RESULTS_B02, JACCARD_RESULTS_B02_signif, keyby="Species", all.x = TRUE)
+###################################################
+
+### this now includes ALL jaccard dissimilarities. Some of these are significantly associated with the observed Dissimilarity distribution -> so their presence has a testable effect on jaccard dissimilarity.
+
+### the idea is to show all taxa (because their placement along this distribution is relevant in some sort), but to then only color circles if their presence is significantly associated with Jacc.Distribution
+
+#### create a data frame of taxa affected by the loss/presence of a species only for taxa that significantly interact with JaccDist
+
+tests.Jsignificant<-list()
+
+for (i in 1:length(MATS_sig)){
+  
+  list.num<-i
+  mats1<-MATS_sig[[list.num]][[1]]
+  mats2<-MATS_sig[[list.num]][[2]]
+  
+  if (nrow(mats1) > 0 && nrow(mats2) > 0 && all(colnames(mats1) == colnames(mats2))){
+    
+    tmp.out<-c()
+    tmp.diff<-c()
+    tmp.sd<-c()
+    for (j in 1:ncol(mats1)){
+      col.num<-j
+      tmp1<-as.vector(mats1[,col.num])
+      tmp2<-as.vector(mats2[,col.num])
+      tmp.test<-wilcox.test(tmp1,tmp2, paired = FALSE)
+      tmp.diff<-c(tmp.diff, mean(tmp1)-mean(tmp2))
+      tmp.sd<-c(tmp.sd, ((mean(tmp1))*(sd(tmp1)) + (mean(tmp2))*(sd(tmp2)))/(mean(tmp1)+mean(tmp2)))
+      tmp.out<-c(tmp.out, as.numeric(tmp.test$p.value))
+    }
+    out<-data.frame(p.val=tmp.out, mean_diff=tmp.diff, sd_diff=tmp.sd)
+    rownames(out)<-colnames(mats1)
+    
+  TESTadj<-p.adjust(out$p.val , method = "fdr")
+  out <- data.frame(out, p.adjusted = TESTadj)
+  tests.Jsignificant[[names(MATS_sig)[list.num]]]<-out
+  }
+}
+
+signif.tests.Jsignificant<-map(tests.Jsignificant, ~filter(.x, p.adjusted <0.05))
+signif.tests.Jsignificant
+aaa<-imap_dfr(signif.tests.Jsignificant, ~ .x %>%  mutate(index = .y))
+w.test.B02.JDistSpecies <- tibble::rownames_to_column(aaa, "affected_species")
+w.test.B02.JDistSpecies
+
+
+#### create a data frame of taxa affected by the loss/presence of a species (including all species)
+tests.ALL<-list()
+
+for (i in 1:length(MATS)){
+  list.num<-i
+  mats1<-MATS[[list.num]][[1]]
+  mats2<-MATS[[list.num]][[2]]
+  if (nrow(mats1) > 0 && nrow(mats2) > 0 && all(colnames(mats1) == colnames(mats2))){
+    
+    tmp.out<-c()
+    tmp.diff<-c()
+     tmp.sd<-c()
+    for (j in 1:ncol(mats1)){
+      col.num<-j
+      tmp1<-as.vector(mats1[,col.num])
+      tmp2<-as.vector(mats2[,col.num])
+      tmp.test<-wilcox.test(tmp1,tmp2, paired = FALSE)
+      tmp.diff<-c(tmp.diff, mean(tmp1)-mean(tmp2))
+      tmp.sd<-c(tmp.sd, ((mean(tmp1))*(sd(tmp1)) + (mean(tmp2))*(sd(tmp2)))/(mean(tmp1)+mean(tmp2)))
+      tmp.out<-c(tmp.out, as.numeric(tmp.test$p.value))
+    }
+    
+    out<-data.frame(p.val=tmp.out, mean_diff=tmp.diff,sd_diff=tmp.sd)
+    rownames(out)<-colnames(mats1)
+    
+  TESTadj<-p.adjust(out$p.val , method = "fdr")
+  out <- data.frame(out, p.adjusted = TESTadj)
+  tests.ALL[[names(MATS)[list.num]]]<-out
+  }
+}
+
+signif.tests.ALL<-map(tests.ALL, ~filter(.x, p.adjusted <0.05))
+signif.tests.ALL
+bbb<-imap_dfr(signif.tests.ALL, ~ .x %>%  mutate(index = .y))
+w.test.B02.ALLSPECIES <- tibble::rownames_to_column(bbb, "affected_species")
+w.test.B02.ALLSPECIES
+
+
+### the wilcox.test tables need to be saved and cleaned up, because "affected_species" gets a unique number assigned as they initially had to be saved as rows. Some manual work necessary!
+
+#### IMPORTANT w.test files will be overwritten!!!! check that names in .csv files below are correct
+#fwrite(w.test.B02.JDistSpecies, "~/Documents/Wellcome_Trust/differential_abundance_testing/w.test.B02.JDistSpecies.csv")
+#fwrite(w.test.B02.ALLSPECIES, "~/Documents/Wellcome_Trust/differential_abundance_testing/w.test.B02.ALLSPECIES.csv")
+
+###
+
+
+```
+
+
+
+```{r}
+setwd("~/Documents/Wellcome_Trust/")
+
+##### Focal-Species: B-06
+
+pseq.core.B02<-readRDS("pseq.core.B06.rds") ### IMPORTANT CHECK FOR CORRECT SOURCE-FILE
+B02_paMatrixPS<-phyloseq_standardize_otu_abundance(pseq.core.B02, method = "pa")
+B02_paMatrix <- as(otu_table(B02_paMatrixPS), "matrix")
+B02_countMatrix <- as(otu_table(pseq.core.B02), "matrix") 
+TB02_paMatrix<-t(B02_paMatrix) ## this is the presence-absence matrix for the relevant time-frame
+TB02_countMatrix<-t(B02_countMatrix) ## this is the count matrix for the relevant time-frame
+
+set.seed(16)
+PA_nullmodel<-randomizeMatrix(TB02_paMatrix, null.model = c("frequency"), iterations = 10000) # this should be our null-model
+
+# lets check the distribution of distance matrix
+trueJ<-vegdist(TB02_paMatrix, method = "jaccard",binary = TRUE)
+nullJ<-vegdist(PA_nullmodel, method = "jaccard",binary = TRUE)
+hist(trueJ)
+hist(nullJ)
+a<-ks.test(trueJ,nullJ) ##looking good, there's biological signal and we destroyed it, cool.
+a$p.value
+### we have now a PA matrix and a count matrix. We first need to subset the PA matrix into M-Sp.Included and M-Sp-exluded. At the same time, we need to randomize these matrices and make nonparametric tests to see if the distribution is random or not
+
+nullmodel_list_with<- c()
+nullmodel_list_without<- c()
+list_with <- c()
+list_without <- c()
+list_countwith <- c()
+list_countwithout <- c()
+MATS<-c()
+reslist <-c()
+
+for (s in colnames(TB02_paMatrix)){
+    with<-subset(TB02_paMatrix,TB02_paMatrix[,s]>0)
+    without<-subset(TB02_paMatrix,TB02_paMatrix[,s]==0)
+    NULL_with<-subset(PA_nullmodel,PA_nullmodel[,s]>0)
+    NULL_without<-subset(PA_nullmodel,PA_nullmodel[,s]>0)
+    JaccWith<-vegdist(with, method = "jaccard",binary = TRUE)
+    JaccWithout<-vegdist(without, method = "jaccard",binary = TRUE)
+    NULLJaccWith<-vegdist(NULL_with, method = "jaccard",binary = TRUE)
+    NULLJaccWithout<-vegdist(NULL_without, method = "jaccard",binary = TRUE)
+    withCOUNT<-subset(TB02_countMatrix,TB02_countMatrix[,s]>0)
+    withoutCOUNT<-subset(TB02_countMatrix,TB02_countMatrix[,s]==0)
+    res <- ks.test(JaccWith,NULLJaccWith)
+    reslist<-c(reslist,res$p.value)
+    list_with[[s]] <- mean(JaccWith) 
+    list_without[[s]] <- mean(JaccWithout)
+    MATS[[s]] <- list(withCOUNT, withoutCOUNT)
+}
+names(reslist)<-colnames(TB02_paMatrix)
+
+TESTadj<-p.adjust(reslist , method = "bonferroni")
+list_with_sig <- c()
+list_without_sig <- c()
+MATS_sig<-c()
+
+for (i in 1:length(TESTadj)){
+  s<-names(TESTadj)[i]
+  pval<-TESTadj[i]
+  if (pval < 0.05)
+      {
+    list_with_sig[[s]] <- list_with[[s]]
+    list_without_sig[[s]] <- list_without[[s]]
+    MATS_sig[[s]] <- MATS[[s]]
+    } else{
+      NULL
+    }
+}
+
+print(list_with)
+Jacc_list_with <- data.frame(list_with)
+Jacc_df_with<-t(Jacc_list_with) %>% as.data.frame()
+Jacc_df_with <- tibble::rownames_to_column(Jacc_df_with, "Species")
+Jacc_df_with<-as.data.table(Jacc_df_with)
+colnames(Jacc_df_with)[2]<-"Jaccard_dissimilarity_SpeciesIncluded"
+
+Jacc_list_without <- data.frame(list_without)
+Jacc_df_without<-t(Jacc_list_without) %>% as.data.frame()
+Jacc_df_without <- tibble::rownames_to_column(Jacc_df_without, "Species")
+Jacc_df_without<-as.data.table(Jacc_df_without)
+colnames(Jacc_df_without)[2]<-"Jaccard_dissimilarity_SpeciesExcluded"
+
+### IMPORTANT CHANGE NAME HERE ACCORDING TO B-06
+JACCARD_RESULTS_B06<-merge(Jacc_df_without,Jacc_df_with, by ="Species")
+#################################################
+
+Jacc_list_withsignif <- data.frame(list_with_sig)
+Jacc_df_with_signif<-t(Jacc_list_withsignif) %>% as.data.frame()
+Jacc_df_with_signif <- tibble::rownames_to_column(Jacc_df_with_signif, "Species")
+Jacc_df_with_signif<-as.data.table(Jacc_df_with_signif)
+colnames(Jacc_df_with_signif)[2]<-"Jaccard_dissimilarity_SpeciesIncluded_Signif"
+
+Jacc_list_without_signif <- data.frame(list_without_sig)
+Jacc_df_without_signif<-t(Jacc_list_without_signif) %>% as.data.frame()
+Jacc_df_without_signif <- tibble::rownames_to_column(Jacc_df_without_signif, "Species")
+Jacc_df_without_signif<-as.data.table(Jacc_df_without_signif)
+colnames(Jacc_df_without_signif)[2]<-"Jaccard_dissimilarity_SpeciesExcluded_Signif"
+
+### IMPORTANT CHANGE NAME HERE ACCORDING TO B-06
+JACCARD_RESULTS_B06_signif<-merge(Jacc_df_without_signif,Jacc_df_with_signif, by ="Species")
+ggplot(JACCARD_RESULTS_B06, aes(x=Jaccard_dissimilarity_SpeciesIncluded)) + geom_density()
+JACCARD_RESULTS_B06_ALL<-merge(JACCARD_RESULTS_B06, JACCARD_RESULTS_B06_signif, keyby="Species", all.x = TRUE)
+
+#################################################
+### this now includes ALL jaccard dissimilarities. Some of these are significantly associated with the observed Dissimilarity distribution -> so their presence has a testable effect on jaccard dissimilarity.
+
+### the idea is to show all taxa (because their placement along this distribution is relevant in some sort), but to then only color circles if their presence is significantly associated with Jacc.Distribution
+
+#### create a data frame of taxa affected by the loss/presence of a species only for taxa that significantly interact with JaccDist
+
+tests.Jsignificant<-list()
+
+for (i in 1:length(MATS_sig)){
+  
+  list.num<-i
+  mats1<-MATS_sig[[list.num]][[1]]
+  mats2<-MATS_sig[[list.num]][[2]]
+  
+  if (nrow(mats1) > 0 && nrow(mats2) > 0 && all(colnames(mats1) == colnames(mats2))){
+    
+    tmp.out<-c()
+    tmp.diff<-c()
+    tmp.sd<-c()
+    for (j in 1:ncol(mats1)){
+      col.num<-j
+      tmp1<-as.vector(mats1[,col.num])
+      tmp2<-as.vector(mats2[,col.num])
+      tmp.test<-wilcox.test(tmp1,tmp2, paired = FALSE)
+      tmp.diff<-c(tmp.diff, mean(tmp1)-mean(tmp2))
+      tmp.sd<-c(tmp.sd, ((mean(tmp1))*(sd(tmp1)) + (mean(tmp2))*(sd(tmp2)))/(mean(tmp1)+mean(tmp2)))
+      tmp.out<-c(tmp.out, as.numeric(tmp.test$p.value))
+    }
+    out<-data.frame(p.val=tmp.out, mean_diff=tmp.diff, sd_diff=tmp.sd)
+    rownames(out)<-colnames(mats1)
+    
+  TESTadj<-p.adjust(out$p.val , method = "fdr")
+  out <- data.frame(out, p.adjusted = TESTadj)
+  tests.Jsignificant[[names(MATS_sig)[list.num]]]<-out
+  }
+}
+
+signif.tests.Jsignificant<-map(tests.Jsignificant, ~filter(.x, p.adjusted <0.05))
+signif.tests.Jsignificant
+aaa<-imap_dfr(signif.tests.Jsignificant, ~ .x %>%  mutate(index = .y))
+w.test.B02.JDistSpecies <- tibble::rownames_to_column(aaa, "affected_species")
+w.test.B02.JDistSpecies
+
+#### create a data frame of taxa affected by the loss/presence of a species (including all species)
+tests.ALL<-list()
+
+for (i in 1:length(MATS)){
+  list.num<-i
+  mats1<-MATS[[list.num]][[1]]
+  mats2<-MATS[[list.num]][[2]]
+  if (nrow(mats1) > 0 && nrow(mats2) > 0 && all(colnames(mats1) == colnames(mats2))){
+    
+    tmp.out<-c()
+    tmp.diff<-c()
+     tmp.sd<-c()
+    for (j in 1:ncol(mats1)){
+      col.num<-j
+      tmp1<-as.vector(mats1[,col.num])
+      tmp2<-as.vector(mats2[,col.num])
+      tmp.test<-wilcox.test(tmp1,tmp2, paired = FALSE)
+      tmp.diff<-c(tmp.diff, mean(tmp1)-mean(tmp2))
+      tmp.sd<-c(tmp.sd, ((mean(tmp1))*(sd(tmp1)) + (mean(tmp2))*(sd(tmp2)))/(mean(tmp1)+mean(tmp2)))
+      tmp.out<-c(tmp.out, as.numeric(tmp.test$p.value))
+    }
+    
+    out<-data.frame(p.val=tmp.out, mean_diff=tmp.diff,sd_diff=tmp.sd)
+    rownames(out)<-colnames(mats1)
+    
+  TESTadj<-p.adjust(out$p.val , method = "fdr")
+  out <- data.frame(out, p.adjusted = TESTadj)
+  tests.ALL[[names(MATS)[list.num]]]<-out
+  }
+}
+
+signif.tests.ALL<-map(tests.ALL, ~filter(.x, p.adjusted <0.05))
+signif.tests.ALL
+bbb<-imap_dfr(signif.tests.ALL, ~ .x %>%  mutate(index = .y))
+w.test.B02.ALLSPECIES <- tibble::rownames_to_column(bbb, "affected_species")
+w.test.B02.ALLSPECIES
+
+### we are just overwriting "w.test.B02.ALLSPECIES", it has nothing to do with B-02 anymore
+
+
+### the wilcox.test tables need to be saved and cleaned up, because "affected_species" gets a unique number assigned as they initially had to be saved as rows
+### IMPORTANT: w.test files are being overwritten!!!! change names in .csv to be saved below
+#fwrite(w.test.B02.JDistSpecies, "~/Documents/Wellcome_Trust/differential_abundance_testing/w.test.B06.JDistSpecies.csv")
+#fwrite(w.test.B02.ALLSPECIES, "~/Documents/Wellcome_Trust/differential_abundance_testing/w.test.B06.ALLSPECIES.csv")
+
+###
+```
+
+
+
+
+
+```{r}
+setwd("~/Documents/Wellcome_Trust/")
+
+##### Focal-Species: B-11
+
+pseq.core.B02<-readRDS("pseq.core.B11.rds") #### IMPORTANT CHANGE SOURCE FILE HERE
+B02_paMatrixPS<-phyloseq_standardize_otu_abundance(pseq.core.B02, method = "pa")
+B02_paMatrix <- as(otu_table(B02_paMatrixPS), "matrix")
+B02_countMatrix <- as(otu_table(pseq.core.B02), "matrix") 
+TB02_paMatrix<-t(B02_paMatrix) ## this is the presence-absence matrix for the relevant time-frame
+TB02_countMatrix<-t(B02_countMatrix) ## this is the count matrix for the relevant time-frame
+
+set.seed(16)
+PA_nullmodel<-randomizeMatrix(TB02_paMatrix, null.model = c("frequency"), iterations = 10000) # this should be our null-model
+
+# lets check the distribution of distance matrix
+trueJ<-vegdist(TB02_paMatrix, method = "jaccard",binary = TRUE)
+nullJ<-vegdist(PA_nullmodel, method = "jaccard",binary = TRUE)
+hist(trueJ)
+hist(nullJ)
+a<-ks.test(trueJ,nullJ) ##looking good, there's biological signal and we destroyed it, cool.
+a$p.value
+### we have now a PA matrix and a count matrix. We first need to subset the PA matrix into M-Sp.Included and M-Sp-exluded. At the same time, we need to randomize these matrices and make nonparametric tests to see if the distribution is random or not
+
+nullmodel_list_with<- c()
+nullmodel_list_without<- c()
+list_with <- c()
+list_without <- c()
+list_countwith <- c()
+list_countwithout <- c()
+MATS<-c()
+reslist <-c()
+
+for (s in colnames(TB02_paMatrix)){
+    with<-subset(TB02_paMatrix,TB02_paMatrix[,s]>0)
+    without<-subset(TB02_paMatrix,TB02_paMatrix[,s]==0)
+    NULL_with<-subset(PA_nullmodel,PA_nullmodel[,s]>0)
+    NULL_without<-subset(PA_nullmodel,PA_nullmodel[,s]>0)
+    JaccWith<-vegdist(with, method = "jaccard",binary = TRUE)
+    JaccWithout<-vegdist(without, method = "jaccard",binary = TRUE)
+    NULLJaccWith<-vegdist(NULL_with, method = "jaccard",binary = TRUE)
+    NULLJaccWithout<-vegdist(NULL_without, method = "jaccard",binary = TRUE)
+    withCOUNT<-subset(TB02_countMatrix,TB02_countMatrix[,s]>0)
+    withoutCOUNT<-subset(TB02_countMatrix,TB02_countMatrix[,s]==0)
+    res <- ks.test(JaccWith,NULLJaccWith)
+    reslist<-c(reslist,res$p.value)
+    list_with[[s]] <- mean(JaccWith) 
+    list_without[[s]] <- mean(JaccWithout)
+    MATS[[s]] <- list(withCOUNT, withoutCOUNT)
+}
+names(reslist)<-colnames(TB02_paMatrix)
+
+TESTadj<-p.adjust(reslist , method = "bonferroni")
+list_with_sig <- c()
+list_without_sig <- c()
+MATS_sig<-c()
+
+for (i in 1:length(TESTadj)){
+  s<-names(TESTadj)[i]
+  pval<-TESTadj[i]
+  if (pval < 0.05)
+      {
+    list_with_sig[[s]] <- list_with[[s]]
+    list_without_sig[[s]] <- list_without[[s]]
+    MATS_sig[[s]] <- MATS[[s]]
+    } else{
+      NULL
+    }
+}
+
+print(list_with)
+Jacc_list_with <- data.frame(list_with)
+Jacc_df_with<-t(Jacc_list_with) %>% as.data.frame()
+Jacc_df_with <- tibble::rownames_to_column(Jacc_df_with, "Species")
+Jacc_df_with<-as.data.table(Jacc_df_with)
+colnames(Jacc_df_with)[2]<-"Jaccard_dissimilarity_SpeciesIncluded"
+
+Jacc_list_without <- data.frame(list_without)
+Jacc_df_without<-t(Jacc_list_without) %>% as.data.frame()
+Jacc_df_without <- tibble::rownames_to_column(Jacc_df_without, "Species")
+Jacc_df_without<-as.data.table(Jacc_df_without)
+colnames(Jacc_df_without)[2]<-"Jaccard_dissimilarity_SpeciesExcluded"
+
+### IMPORTANT CHANGE NAME HERE ACCORDING TO B-11
+JACCARD_RESULTS_B11<-merge(Jacc_df_without,Jacc_df_with, by ="Species")
+#################################################
+
+Jacc_list_withsignif <- data.frame(list_with_sig)
+Jacc_df_with_signif<-t(Jacc_list_withsignif) %>% as.data.frame()
+Jacc_df_with_signif <- tibble::rownames_to_column(Jacc_df_with_signif, "Species")
+Jacc_df_with_signif<-as.data.table(Jacc_df_with_signif)
+colnames(Jacc_df_with_signif)[2]<-"Jaccard_dissimilarity_SpeciesIncluded_Signif"
+
+Jacc_list_without_signif <- data.frame(list_without_sig)
+Jacc_df_without_signif<-t(Jacc_list_without_signif) %>% as.data.frame()
+Jacc_df_without_signif <- tibble::rownames_to_column(Jacc_df_without_signif, "Species")
+Jacc_df_without_signif<-as.data.table(Jacc_df_without_signif)
+colnames(Jacc_df_without_signif)[2]<-"Jaccard_dissimilarity_SpeciesExcluded_Signif"
+
+### IMPORTANT CHANGE NAME HERE ACCORDING TO B-11
+JACCARD_RESULTS_B011_signif<-merge(Jacc_df_without_signif,Jacc_df_with_signif, by ="Species")
+ggplot(JACCARD_RESULTS_B11, aes(x=Jaccard_dissimilarity_SpeciesIncluded)) + geom_density()
+JACCARD_RESULTS_B11_ALL<-merge(JACCARD_RESULTS_B11, JACCARD_RESULTS_B011_signif, keyby="Species", all.x = TRUE)
+#################################################
+
+### this now includes ALL jaccard dissimilarities. Some of these are significantly associated with the observed Dissimilarity distribution -> so their presence has a testable effect on jaccard dissimilarity.
+### the idea is to show all taxa (because their placement along this distribution is relevant in some sort), but to then only color circles if their presence is significantly associated with Jacc.Distribution
+
+#### create a data frame of taxa affected by the loss/presence of a species only for taxa that significantly interact with JaccDist
+
+tests.Jsignificant<-list()
+
+for (i in 1:length(MATS_sig)){
+  
+  list.num<-i
+  mats1<-MATS_sig[[list.num]][[1]]
+  mats2<-MATS_sig[[list.num]][[2]]
+  
+  if (nrow(mats1) > 0 && nrow(mats2) > 0 && all(colnames(mats1) == colnames(mats2))){
+    
+    tmp.out<-c()
+    tmp.diff<-c()
+    tmp.sd<-c()
+    for (j in 1:ncol(mats1)){
+      col.num<-j
+      tmp1<-as.vector(mats1[,col.num])
+      tmp2<-as.vector(mats2[,col.num])
+      tmp.test<-wilcox.test(tmp1,tmp2, paired = FALSE)
+      tmp.diff<-c(tmp.diff, mean(tmp1)-mean(tmp2))
+      tmp.sd<-c(tmp.sd, ((mean(tmp1))*(sd(tmp1)) + (mean(tmp2))*(sd(tmp2)))/(mean(tmp1)+mean(tmp2)))
+      tmp.out<-c(tmp.out, as.numeric(tmp.test$p.value))
+    }
+    out<-data.frame(p.val=tmp.out, mean_diff=tmp.diff, sd_diff=tmp.sd)
+    rownames(out)<-colnames(mats1)
+    
+  TESTadj<-p.adjust(out$p.val , method = "fdr")
+  out <- data.frame(out, p.adjusted = TESTadj)
+  tests.Jsignificant[[names(MATS_sig)[list.num]]]<-out
+  }
+}
+
+signif.tests.Jsignificant<-map(tests.Jsignificant, ~filter(.x, p.adjusted <0.05))
+signif.tests.Jsignificant
+aaa<-imap_dfr(signif.tests.Jsignificant, ~ .x %>%  mutate(index = .y))
+w.test.B02.JDistSpecies <- tibble::rownames_to_column(aaa, "affected_species")
+w.test.B02.JDistSpecies
+
+#### create a data frame of taxa affected by the loss/presence of a species (including all species)
+tests.ALL<-list()
+
+for (i in 1:length(MATS)){
+  list.num<-i
+  mats1<-MATS[[list.num]][[1]]
+  mats2<-MATS[[list.num]][[2]]
+  if (nrow(mats1) > 0 && nrow(mats2) > 0 && all(colnames(mats1) == colnames(mats2))){
+    
+    tmp.out<-c()
+    tmp.diff<-c()
+     tmp.sd<-c()
+    for (j in 1:ncol(mats1)){
+      col.num<-j
+      tmp1<-as.vector(mats1[,col.num])
+      tmp2<-as.vector(mats2[,col.num])
+      tmp.test<-wilcox.test(tmp1,tmp2, paired = FALSE)
+      tmp.diff<-c(tmp.diff, mean(tmp1)-mean(tmp2))
+      tmp.sd<-c(tmp.sd, ((mean(tmp1))*(sd(tmp1)) + (mean(tmp2))*(sd(tmp2)))/(mean(tmp1)+mean(tmp2)))
+      tmp.out<-c(tmp.out, as.numeric(tmp.test$p.value))
+    }
+    
+    out<-data.frame(p.val=tmp.out, mean_diff=tmp.diff,sd_diff=tmp.sd)
+    rownames(out)<-colnames(mats1)
+    
+  TESTadj<-p.adjust(out$p.val , method = "fdr")
+  out <- data.frame(out, p.adjusted = TESTadj)
+  tests.ALL[[names(MATS)[list.num]]]<-out
+  }
+}
+
+signif.tests.ALL<-map(tests.ALL, ~filter(.x, p.adjusted <0.05))
+signif.tests.ALL
+bbb<-imap_dfr(signif.tests.ALL, ~ .x %>%  mutate(index = .y))
+w.test.B02.ALLSPECIES <- tibble::rownames_to_column(bbb, "affected_species")
+w.test.B02.ALLSPECIES
+### the wilcox.test tables need to be saved and cleaned up, because "affected_species" gets a unique number assigned as they initially had to be saved as rows
+
+### IMPORTANT: w.test files are being overwritten!!!! change names in .csv to be saved below
+#fwrite(w.test.B02.JDistSpecies, "~/Documents/Wellcome_Trust/differential_abundance_testing/w.test.B11.JDistSpecies.csv")
+#fwrite(w.test.B02.ALLSPECIES, "~/Documents/Wellcome_Trust/differential_abundance_testing/w.test.B11.ALLSPECIES.csv")
+
+###
+```
+
+
+
+```{r}
+setwd("~/Documents/Wellcome_Trust/")
+
+##### Focal-Species: Maternal
+
+pseq.core.B02<-readRDS("pseq.core.moms.rds") #IMPORTANT CHANGE SOURCE-FILE HERE
+B02_paMatrixPS<-phyloseq_standardize_otu_abundance(pseq.core.B02, method = "pa")
+B02_paMatrix <- as(otu_table(B02_paMatrixPS), "matrix")
+B02_countMatrix <- as(otu_table(pseq.core.B02), "matrix") 
+TB02_paMatrix<-t(B02_paMatrix) ## this is the presence-absence matrix for the relevant time-frame
+TB02_countMatrix<-t(B02_countMatrix) ## this is the count matrix for the relevant time-frame
+
+set.seed(16)
+PA_nullmodel<-randomizeMatrix(TB02_paMatrix, null.model = c("frequency"), iterations = 10000) # this should be our null-model
+
+# lets check the distribution of distance matrix
+trueJ<-vegdist(TB02_paMatrix, method = "jaccard",binary = TRUE)
+nullJ<-vegdist(PA_nullmodel, method = "jaccard",binary = TRUE)
+hist(trueJ)
+hist(nullJ)
+a<-ks.test(trueJ,nullJ) ##looking good, there's biological signal and we destroyed it, cool.
+a$p.value
+### we have now a PA matrix and a count matrix. We first need to subset the PA matrix into M-Sp.Included and M-Sp-exluded. At the same time, we need to randomize these matrices and make nonparametric tests to see if the distribution is random or not
+
+nullmodel_list_with<- c()
+nullmodel_list_without<- c()
+list_with <- c()
+list_without <- c()
+list_countwith <- c()
+list_countwithout <- c()
+MATS<-c()
+reslist <-c()
+
+for (s in colnames(TB02_paMatrix)){
+    with<-subset(TB02_paMatrix,TB02_paMatrix[,s]>0)
+    without<-subset(TB02_paMatrix,TB02_paMatrix[,s]==0)
+    NULL_with<-subset(PA_nullmodel,PA_nullmodel[,s]>0)
+    NULL_without<-subset(PA_nullmodel,PA_nullmodel[,s]>0)
+    JaccWith<-vegdist(with, method = "jaccard",binary = TRUE)
+    JaccWithout<-vegdist(without, method = "jaccard",binary = TRUE)
+    NULLJaccWith<-vegdist(NULL_with, method = "jaccard",binary = TRUE)
+    NULLJaccWithout<-vegdist(NULL_without, method = "jaccard",binary = TRUE)
+    withCOUNT<-subset(TB02_countMatrix,TB02_countMatrix[,s]>0)
+    withoutCOUNT<-subset(TB02_countMatrix,TB02_countMatrix[,s]==0)
+    res <- ks.test(JaccWith,NULLJaccWith)
+    reslist<-c(reslist,res$p.value)
+    list_with[[s]] <- mean(JaccWith) 
+    list_without[[s]] <- mean(JaccWithout)
+    MATS[[s]] <- list(withCOUNT, withoutCOUNT)
+}
+names(reslist)<-colnames(TB02_paMatrix)
+
+TESTadj<-p.adjust(reslist , method = "bonferroni")
+list_with_sig <- c()
+list_without_sig <- c()
+MATS_sig<-c()
+
+for (i in 1:length(TESTadj)){
+  s<-names(TESTadj)[i]
+  pval<-TESTadj[i]
+  if (pval < 0.05)
+      {
+    list_with_sig[[s]] <- list_with[[s]]
+    list_without_sig[[s]] <- list_without[[s]]
+    MATS_sig[[s]] <- MATS[[s]]
+    } else{
+      NULL
+    }
+}
+
+print(list_with)
+Jacc_list_with <- data.frame(list_with)
+Jacc_df_with<-t(Jacc_list_with) %>% as.data.frame()
+Jacc_df_with <- tibble::rownames_to_column(Jacc_df_with, "Species")
+Jacc_df_with<-as.data.table(Jacc_df_with)
+colnames(Jacc_df_with)[2]<-"Jaccard_dissimilarity_SpeciesIncluded"
+
+Jacc_list_without <- data.frame(list_without)
+Jacc_df_without<-t(Jacc_list_without) %>% as.data.frame()
+Jacc_df_without <- tibble::rownames_to_column(Jacc_df_without, "Species")
+Jacc_df_without<-as.data.table(Jacc_df_without)
+colnames(Jacc_df_without)[2]<-"Jaccard_dissimilarity_SpeciesExcluded"
+
+### IMPORTANT CHANGE NAME HERE ACCORDING TO B-11
+JACCARD_RESULTS_M<-merge(Jacc_df_without,Jacc_df_with, by ="Species")
+#################################################
+
+Jacc_list_withsignif <- data.frame(list_with_sig)
+Jacc_df_with_signif<-t(Jacc_list_withsignif) %>% as.data.frame()
+Jacc_df_with_signif <- tibble::rownames_to_column(Jacc_df_with_signif, "Species")
+Jacc_df_with_signif<-as.data.table(Jacc_df_with_signif)
+colnames(Jacc_df_with_signif)[2]<-"Jaccard_dissimilarity_SpeciesIncluded_Signif"
+
+Jacc_list_without_signif <- data.frame(list_without_sig)
+Jacc_df_without_signif<-t(Jacc_list_without_signif) %>% as.data.frame()
+Jacc_df_without_signif <- tibble::rownames_to_column(Jacc_df_without_signif, "Species")
+Jacc_df_without_signif<-as.data.table(Jacc_df_without_signif)
+colnames(Jacc_df_without_signif)[2]<-"Jaccard_dissimilarity_SpeciesExcluded_Signif"
+
+### IMPORTANT CHANGE NAME HERE ACCORDING TO B-Maternal
+JACCARD_RESULTS_M_signif<-merge(Jacc_df_without_signif,Jacc_df_with_signif, by ="Species")
+
+ggplot(JACCARD_RESULTS_M, aes(x=Jaccard_dissimilarity_SpeciesIncluded)) + geom_density()
+JACCARD_RESULTS_M_ALL<-merge(JACCARD_RESULTS_M, JACCARD_RESULTS_M_signif, keyby="Species", all.x = TRUE)
+#################################################
+
+### this now includes ALL jaccard dissimilarities. Some of these are significantly associated with the observed Dissimilarity distribution -> so their presence has a testable effect on jaccard dissimilarity.
+### the idea is to show all taxa (because their placement along this distribution is relevant in some sort), but to then only color circles if their presence is significantly associated with Jacc.Distribution
+
+#### create a data frame of taxa affected by the loss/presence of a species only for taxa that significantly interact with JaccDist
+
+tests.Jsignificant<-list()
+
+for (i in 1:length(MATS_sig)){
+  
+  list.num<-i
+  mats1<-MATS_sig[[list.num]][[1]]
+  mats2<-MATS_sig[[list.num]][[2]]
+  
+  if (nrow(mats1) > 0 && nrow(mats2) > 0 && all(colnames(mats1) == colnames(mats2))){
+    
+    tmp.out<-c()
+    tmp.diff<-c()
+    tmp.sd<-c()
+    for (j in 1:ncol(mats1)){
+      col.num<-j
+      tmp1<-as.vector(mats1[,col.num])
+      tmp2<-as.vector(mats2[,col.num])
+      tmp.test<-wilcox.test(tmp1,tmp2, paired = FALSE)
+      tmp.diff<-c(tmp.diff, mean(tmp1)-mean(tmp2))
+      tmp.sd<-c(tmp.sd, ((mean(tmp1))*(sd(tmp1)) + (mean(tmp2))*(sd(tmp2)))/(mean(tmp1)+mean(tmp2)))
+      tmp.out<-c(tmp.out, as.numeric(tmp.test$p.value))
+    }
+    out<-data.frame(p.val=tmp.out, mean_diff=tmp.diff, sd_diff=tmp.sd)
+    rownames(out)<-colnames(mats1)
+    
+  TESTadj<-p.adjust(out$p.val , method = "fdr")
+  out <- data.frame(out, p.adjusted = TESTadj)
+  tests.Jsignificant[[names(MATS_sig)[list.num]]]<-out
+  }
+}
+
+signif.tests.Jsignificant<-map(tests.Jsignificant, ~filter(.x, p.adjusted <0.05))
+signif.tests.Jsignificant
+aaa<-imap_dfr(signif.tests.Jsignificant, ~ .x %>%  mutate(index = .y))
+w.test.B02.JDistSpecies <- tibble::rownames_to_column(aaa, "affected_species")
+w.test.B02.JDistSpecies
+
+#### create a data frame of taxa affected by the loss/presence of a species (including all species)
+tests.ALL<-list()
+
+for (i in 1:length(MATS)){
+  list.num<-i
+  mats1<-MATS[[list.num]][[1]]
+  mats2<-MATS[[list.num]][[2]]
+  if (nrow(mats1) > 0 && nrow(mats2) > 0 && all(colnames(mats1) == colnames(mats2))){
+    
+    tmp.out<-c()
+    tmp.diff<-c()
+     tmp.sd<-c()
+    for (j in 1:ncol(mats1)){
+      col.num<-j
+      tmp1<-as.vector(mats1[,col.num])
+      tmp2<-as.vector(mats2[,col.num])
+      tmp.test<-wilcox.test(tmp1,tmp2, paired = FALSE)
+      tmp.diff<-c(tmp.diff, mean(tmp1)-mean(tmp2))
+      tmp.sd<-c(tmp.sd, ((mean(tmp1))*(sd(tmp1)) + (mean(tmp2))*(sd(tmp2)))/(mean(tmp1)+mean(tmp2)))
+      tmp.out<-c(tmp.out, as.numeric(tmp.test$p.value))
+    }
+    
+    out<-data.frame(p.val=tmp.out, mean_diff=tmp.diff,sd_diff=tmp.sd)
+    rownames(out)<-colnames(mats1)
+    
+  TESTadj<-p.adjust(out$p.val , method = "fdr")
+  out <- data.frame(out, p.adjusted = TESTadj)
+  tests.ALL[[names(MATS)[list.num]]]<-out
+  }
+}
+
+signif.tests.ALL<-map(tests.ALL, ~filter(.x, p.adjusted <0.05))
+signif.tests.ALL
+bbb<-imap_dfr(signif.tests.ALL, ~ .x %>%  mutate(index = .y))
+w.test.B02.ALLSPECIES <- tibble::rownames_to_column(bbb, "affected_species")
+w.test.B02.ALLSPECIES
+### the wilcox.test tables need to be saved and cleaned up, because "affected_species" gets a unique number assigned as they initially had to be saved as rows
+
+### IMPORTANT: w.test files are being overwritten!!!! change names in .csv to be saved below
+#fwrite(w.test.B02.JDistSpecies, "~/Documents/Wellcome_Trust/differential_abundance_testing/w.test.Maternal.JDistSpecies.csv")
+#fwrite(w.test.B02.ALLSPECIES, "~/Documents/Wellcome_Trust/differential_abundance_testing/w.test.Maternal.ALLSPECIES.csv")
+
+###
+```
+
+
+
+
+
+
+
+### bind all tables, save them
+```{r}
+#setDT(JACCARD_RESULTS_B02_ALL)
+#setDT(JACCARD_RESULTS_B06_ALL)
+#setDT(JACCARD_RESULTS_B11_ALL)
+#setDT(JACCARD_RESULTS_M_ALL)
+
+#fwrite(JACCARD_RESULTS_B02_ALL, "~/Documents/Wellcome_Trust/differential_abundance_testing/JACCARD_RESULTS_B02_ALL.csv")
+#fwrite(JACCARD_RESULTS_B06_ALL, "~/Documents/Wellcome_Trust/differential_abundance_testing/JACCARD_RESULTS_B06_ALL.csv")
+#fwrite(JACCARD_RESULTS_B11_ALL, "~/Documents/Wellcome_Trust/differential_abundance_testing/JACCARD_RESULTS_B11_ALL.csv")
+#fwrite(JACCARD_RESULTS_M_ALL, "~/Documents/Wellcome_Trust/differential_abundance_testing/JACCARD_RESULTS_M_ALL.csv")
+
+### some small manipulation of column names (according to timepoint) in excel was required for these tables, in order to merge them properly later
+
+JACCARD_RESULTS_B02<-fread("~/Documents/Wellcome_Trust/differential_abundance_testing/JACCARD_RESULTS_B02_ALL.csv")
+JACCARD_RESULTS_B06<-fread("~/Documents/Wellcome_Trust/differential_abundance_testing/JACCARD_RESULTS_B06_ALL.csv")
+JACCARD_RESULTS_B11<-fread("~/Documents/Wellcome_Trust/differential_abundance_testing/JACCARD_RESULTS_B11_ALL.csv")
+JACCARD_RESULTS_Maternal<-fread("~/Documents/Wellcome_Trust/differential_abundance_testing/JACCARD_RESULTS_M_ALL.csv")
+
+JACCARD_RESULTS_B02[,JACCDIFF_B02 := Jaccard_dissimilarity_SpeciesIncluded_B02-Jaccard_dissimilarity_SpeciesExcluded_B02]
+JACCARD_RESULTS_B06[,JACCDIFF_B06 := Jaccard_dissimilarity_SpeciesIncluded_B06-Jaccard_dissimilarity_SpeciesExcluded_B06]
+JACCARD_RESULTS_B11[,JACCDIFF_B11 := Jaccard_dissimilarity_SpeciesIncluded_B11-Jaccard_dissimilarity_SpeciesExcluded_B11]
+JACCARD_RESULTS_Maternal[,JACCDIFF_Maternal := Jaccard_dissimilarity_SpeciesIncluded_Maternal-Jaccard_dissimilarity_SpeciesExcluded_Maternal]
+
+JACCARD_RESULTS_B02[,Age:="B-02"]
+JACCARD_RESULTS_B06[,Age:="B-06"]
+JACCARD_RESULTS_B11[,Age:="B-11"]
+JACCARD_RESULTS_Maternal[, Age :="M"]
+
+JACCARD_RESULTS_B02[,Reactor:="non_reactive"]
+JACCARD_RESULTS_B06[,Reactor:="non_reactive"]
+JACCARD_RESULTS_B11[,Reactor:="non_reactive"]
+JACCARD_RESULTS_Maternal[, Reactor :="non_reactive"]
+
+JACCARD_RESULTS_B02[Jaccard_dissimilarity_SpeciesExcluded_Signif_B02 != "NA" & Jaccard_dissimilarity_SpeciesIncluded_Signif_B02 != "NA",Reactor:="reactor-species"]
+JACCARD_RESULTS_B06[Jaccard_dissimilarity_SpeciesExcluded_Signif_B06 != "NA" & Jaccard_dissimilarity_SpeciesIncluded_Signif_B06 != "NA",Reactor:="reactor-species"]
+JACCARD_RESULTS_B11[Jaccard_dissimilarity_SpeciesExcluded_Signif_B11 != "NA" & Jaccard_dissimilarity_SpeciesIncluded_Signif_B11 != "NA",Reactor:="reactor-species"]
+JACCARD_RESULTS_Maternal[Jaccard_dissimilarity_SpeciesExcluded_Signif_Maternal != "NA" & Jaccard_dissimilarity_SpeciesIncluded_Signif_Maternal != "NA", Reactor :="reactor-species"]
+
+
+library(dplyr)
+library(ampvis2)
+### load taxonomy / abundance information of all timepoints
+
+ampvis.core<-readRDS("~/Documents/Wellcome_Trust/ampvis.core.all.rds")
+Phlan_long_kids<-amp_export_long(
+  ampvis.core,
+  metadata_vars = colnames(ampvis.core$metadata),
+  tax_levels = colnames(ampvis.core$tax)
+)
+
+taxo_sum <- Phlan_long_kids[, .(.N, count = mean(count, na.rm = TRUE), sd.value = sd(count, na.rm = TRUE)), keyby=.(Age, Species)]
+taxo_sum[, Relative_abundance := (count/sum(count)), by = .(Age)]
+
+
+JACCARD_RESULTS_B02<-merge(JACCARD_RESULTS_B02, taxo_sum, by=c("Species", "Age"), all.x=TRUE)
+JACCARD_RESULTS_B06<-merge(JACCARD_RESULTS_B06, taxo_sum, by=c("Species", "Age"), all.x=TRUE)
+JACCARD_RESULTS_B11<-merge(JACCARD_RESULTS_B11, taxo_sum, by=c("Species", "Age"), all.x=TRUE)
+JACCARD_RESULTS_Maternal<-merge(JACCARD_RESULTS_Maternal, taxo_sum, by=c("Species", "Age"), all.x=TRUE)
+
+JACCARD_RESULTS_B02$N<-NULL
+JACCARD_RESULTS_B02$count<-NULL
+JACCARD_RESULTS_B02$sd.value<-NULL
+JACCARD_RESULTS_B06$N<-NULL
+JACCARD_RESULTS_B06$count<-NULL
+JACCARD_RESULTS_B06$sd.value<-NULL
+JACCARD_RESULTS_B11$N<-NULL
+JACCARD_RESULTS_B11$count<-NULL
+JACCARD_RESULTS_B11$sd.value<-NULL
+JACCARD_RESULTS_Maternal$N<-NULL
+JACCARD_RESULTS_Maternal$count<-NULL
+JACCARD_RESULTS_Maternal$sd.value<-NULL
+
+ggplot(JACCARD_RESULTS_B02[!is.na(JACCDIFF_B02)],
+       aes(x=JACCDIFF_B02,
+           y=reorder(Species, JACCDIFF_B02))
+) + geom_point(
+) + geom_vline(xintercept = 0
+) + theme_bw(
+)
+
+XXa<-merge(JACCARD_RESULTS_B02,JACCARD_RESULTS_B06, by = c("Species", "Age","Reactor","Relative_abundance"), all = TRUE)
+XXb<-merge(JACCARD_RESULTS_B11,JACCARD_RESULTS_Maternal, by = c("Species", "Age","Reactor","Relative_abundance"), all = TRUE)
+JACCARD_COMBINED_RESULTS<-merge(XXa, XXb, by =c("Species","Reactor", "Age","Relative_abundance"), all =TRUE)
+#fwrite(JACCARD_COMBINED_RESULTS, "~/Documents/Wellcome_Trust/jaccard_results_AbundanceFiltered.csv")
+
+
+#### check this final file. some manual tweeks may be necessary (species names, meta-data-variables, etx.)
+
+```
+
+
+
+
+```{r}
+
+### you may load this final file to reconstruc how we plotted Figure S2B or Figure 1E in our manucript
+
+library(ggridges)
+library(dplyr)
+setwd("~/Documents/Wellcome_Trust/")
+
+
+jac_raw<-fread("jaccard_results_AbundanceFiltered.csv")
+jac_melt <- melt(jac_raw, id = c("Species","Reactor", "Age","Relative_abundance")) 
+setDT(jac_melt)
+
+jac_melt[Reactor == "reactor-species", Reactor := "state-associated"]
+jac_melt[Reactor == "non_reactive", Reactor := "state-dissociated"]
+### we used to call the reactor / non-reactor species at earlier stages
+
+
+Species_included_jaccard<-ggplot(jac_melt[variable %in% c("Jaccard_dissimilarity_SpeciesIncluded_B02", "Jaccard_dissimilarity_SpeciesIncluded_B06", "Jaccard_dissimilarity_SpeciesIncluded_B11", "Jaccard_dissimilarity_SpeciesIncluded_Maternal")&!is.na(Relative_abundance)], 
+       aes(x=value,
+           y=variable, 
+           fill = variable
+           )
+) + geom_density_ridges(alpha = .1, scale = 0.6,quantile_lines = TRUE,vline_size = 0.5, vline_color = "black",
+) + geom_jitter(aes(color = variable, shape = Reactor, size = Relative_abundance, alpha = 0.8),position = position_jitter(w = 0, h = 0.4)
+) + scale_shape_manual(values=c(1, 4)
+#) + scale_color_manual(values=c("black", "black")
+) + scale_fill_manual(values=c("cyan3", "darkgoldenrod2", "sienna1", "darkslategrey")
+) + scale_color_manual(values=c("cyan3", "darkgoldenrod2", "sienna1", "darkslategrey")
+) + theme_bw(
+) + ggtitle("") +
+  xlab("Versatility of index species") + ylab(""
+) + scale_y_discrete(limits = c("Jaccard_dissimilarity_SpeciesIncluded_Maternal", "Jaccard_dissimilarity_SpeciesIncluded_B11","Jaccard_dissimilarity_SpeciesIncluded_B06","Jaccard_dissimilarity_SpeciesIncluded_B02")
+#) + theme(legend.position = "bottom"
+) 
+Species_included_jaccard
+#ggsave(plot =Species_included_jaccard, "~/Documents/Wellcome_Trust/Figure_1/Jaccard_reactor_species.pdf", height = 7, width = 12)
+
+
+#ggsave(plot =Species_included_jaccard, "~/Documents/Wellcome_Trust/Species_included_jaccard_AbundanceFiltered.pdf", height = 9, width = 15)
+
+jac_melt$Species <- gsub("s__","", jac_melt$Species )
+jac_melt$Species <- gsub("_"," ", jac_melt$Species )
+
+facrec_metric<-ggplot(jac_melt[variable %in% c("JACCDIFF_B02", "JACCDIFF_B06", "JACCDIFF_B11", "JACCDIFF_Maternal")& Relative_abundance>0.01 &! is.na(value)] ,
+       aes(x=value,
+           color = variable,
+           size = Relative_abundance*100,
+           shape = Reactor,
+           y=reorder(Species, value))
+) + geom_point(alpha  = 0.8,
+) + scale_shape_manual(values=c(1, 4)
+) + geom_vline(xintercept = 0
+) + ggtitle("") +
+  xlab("         <- Presence is restraining | ∆µ | Presence is facilitating ->") + ylab(""
+) + theme_bw(
+) + theme(axis.text.y = element_text(face="italic")
+) + theme(legend.position = "bottom"
+) + scale_color_manual(values=c("cyan3", "darkgoldenrod2", "sienna1", "darkslategrey")
+) + scale_fill_manual(values=c("cyan3", "darkgoldenrod2", "sienna1", "darkslategrey")
+#) + coord_flip(
+#) + theme(
+#    plot.margin = margin(t = 1, r = 1, b = 1, l = 25)  
+  )
+facrec_metric
+
+
+#ggsave(plot =facrec_metric, "~/Documents/Wellcome_Trust/000_Figure_2andSupplement/Facilitate_Restric_Metric_jaccard_AbundanceFiltered.pdf", height = 7, width = 12)
+
+
+influencer_count <- jac_melt[! is.na(value)] %>%
+  group_by(Age,Reactor) %>%
+  summarise(count = n_distinct(Species))
+setDT(influencer_count)
+
+indeffectcouns<-ggplot(influencer_count, aes(x = Age,
+                        y = count, 
+                        color = Age,
+                        fill = Age,
+                        group = Reactor,
+                        label = count,
+                        shape = Reactor
+                        )
+) + geom_col(position = position_dodge2(), alpha = 0.1
+) + geom_text(size = 3, position = position_identity()
+) + scale_x_discrete(limits = c("M", "B-11", "B-06", "B-02")
+) + theme_bw(
+) + scale_color_manual(values=c("cyan3", "darkgoldenrod2", "sienna1", "darkslategrey")
+) + scale_fill_manual(values=c("cyan3", "darkgoldenrod2", "sienna1", "darkslategrey")
+) + labs(x = " ", y = "count of influencer and non-influencer species"
+) + coord_flip(
+)
+indeffectcouns
+#ggsave(plot =indeffectcouns, "~/Documents/Wellcome_Trust/Figure_1/indeffectcouns.pdf", height = 7, width = 5)
+
+```
